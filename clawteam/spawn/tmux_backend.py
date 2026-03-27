@@ -1,6 +1,7 @@
 """Tmux spawn backend - launches agents in tmux windows for visual monitoring."""
 
 from __future__ import annotations
+from rich.console import Console
 
 import os
 import re
@@ -25,6 +26,8 @@ from clawteam.spawn.cli_env import build_spawn_path, resolve_clawteam_executable
 from clawteam.spawn.command_validation import validate_spawn_command
 
 _SHELL_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+console = Console()
 
 
 class TmuxBackend(SpawnBackend):
@@ -62,17 +65,31 @@ class TmuxBackend(SpawnBackend):
         # normalize TERM to a sensible value before exporting it into the pane.
         if env_vars.get("TERM", "").lower() == "dumb":
             env_vars["TERM"] = "xterm-256color"
-        env_vars.update({
-            "CLAWTEAM_AGENT_ID": agent_id,
-            "CLAWTEAM_AGENT_NAME": agent_name,
-            "CLAWTEAM_AGENT_TYPE": agent_type,
-            "CLAWTEAM_TEAM_NAME": team_name,
-            "CLAWTEAM_AGENT_LEADER": "0",
-        })
+        env_vars.update(
+            {
+                "CLAWTEAM_AGENT_ID": agent_id,
+                "CLAWTEAM_AGENT_NAME": agent_name,
+                "CLAWTEAM_AGENT_TYPE": agent_type,
+                "CLAWTEAM_TEAM_NAME": team_name,
+                "CLAWTEAM_AGENT_LEADER": "0",
+            }
+        )
         if cwd:
             env_vars["CLAWTEAM_WORKSPACE_DIR"] = cwd
         # Inject context awareness flags
         env_vars["CLAWTEAM_CONTEXT_ENABLED"] = "1"
+        # Claude Code refuses --dangerously-skip-permissions under root unless
+        # IS_SANDBOX or CLAUDE_CODE_BUBBLEWRAP is set.  Docker containers
+        # commonly run as root, so set the flag automatically when needed.
+        if skip_permissions and os.getuid() == 0:
+            if os.path.exists("/.dockerenv"):
+                env_vars.setdefault("IS_SANDBOX", "1")
+            else:
+                console.print(
+                    "[red]Skipping permissions check because --dangerously-skip-permissions "
+                    "was given, but not in a docker container.[/red]"
+                )
+
         if env:
             env_vars.update(env)
         env_vars["PATH"] = build_spawn_path(env_vars.get("PATH", os.environ.get("PATH")))
@@ -117,7 +134,9 @@ class TmuxBackend(SpawnBackend):
         # don't refuse to start when the leader is itself a claude session.
         unset_clause = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION 2>/dev/null; "
         if cwd:
-            full_cmd = f"{unset_clause}{export_str}; cd {shlex.quote(cwd)} && {cmd_str}; {exit_hook}"
+            full_cmd = (
+                f"{unset_clause}{export_str}; cd {shlex.quote(cwd)} && {cmd_str}; {exit_hook}"
+            )
         else:
             full_cmd = f"{unset_clause}{export_str}; {cmd_str}; {exit_hook}"
 
@@ -211,16 +230,18 @@ class TmuxBackend(SpawnBackend):
         pane_pid = 0
         pid_result = subprocess.run(
             ["tmux", "list-panes", "-t", target, "-F", "#{pane_pid}"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if pid_result.returncode == 0 and pid_result.stdout.strip():
             try:
                 pane_pid = int(pid_result.stdout.strip().splitlines()[0])
             except ValueError:
-                pass
+                return f"Error: failed to register agent with invalid PID: {pid_result.stdout}"
 
         # Persist spawn info for liveness checking
         from clawteam.spawn.registry import register_agent
+
         register_agent(
             team_name=team_name,
             agent_name=agent_name,
@@ -261,14 +282,16 @@ class TmuxBackend(SpawnBackend):
         # Count current panes in window 0
         pane_count = subprocess.run(
             ["tmux", "list-panes", "-t", f"{session}:0"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         num_panes = len(pane_count.stdout.strip().splitlines()) if pane_count.returncode == 0 else 0
 
         # Get windows
         result = subprocess.run(
             ["tmux", "list-windows", "-t", session, "-F", "#{window_index}"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             return f"Error: failed to list windows: {result.stderr.strip()}"
@@ -284,19 +307,24 @@ class TmuxBackend(SpawnBackend):
             for w in windows[1:]:
                 subprocess.run(
                     ["tmux", "join-pane", "-s", f"{session}:{w}", "-t", f"{session}:{first}", "-h"],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                 )
             subprocess.run(
                 ["tmux", "select-layout", "-t", f"{session}:{first}", "tiled"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
 
         # Recount
         pane_count = subprocess.run(
             ["tmux", "list-panes", "-t", f"{session}:0"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
-        final_panes = len(pane_count.stdout.strip().splitlines()) if pane_count.returncode == 0 else 0
+        final_panes = (
+            len(pane_count.stdout.strip().splitlines()) if pane_count.returncode == 0 else 0
+        )
         return f"Tiled {final_panes} panes in {session}"
 
     @staticmethod
@@ -309,6 +337,7 @@ class TmuxBackend(SpawnBackend):
         session = TmuxBackend.session_name(team_name)
         subprocess.run(["tmux", "attach-session", "-t", session])
         return result
+
 
 def _confirm_workspace_trust_if_prompted(
     target: str,
@@ -399,7 +428,9 @@ def _looks_like_workspace_trust_prompt(command: list[str], pane_text: str) -> bo
 
     if is_claude_command(command):
         return ("trust this folder" in pane_text or "trust the contents" in pane_text) and (
-            "enter to confirm" in pane_text or "press enter" in pane_text or "enter to continue" in pane_text
+            "enter to confirm" in pane_text
+            or "press enter" in pane_text
+            or "enter to continue" in pane_text
         )
 
     if is_codex_command(command):
