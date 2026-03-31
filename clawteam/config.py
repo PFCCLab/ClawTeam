@@ -37,6 +37,14 @@ class AgentPreset(BaseModel):
     client_overrides: dict[str, AgentProfile] = Field(default_factory=dict)
 
 
+class NodeConfig(BaseModel):
+    """Named remote daemon node."""
+
+    url: str = ""  # e.g. http://10.129.16.114:8181
+    token: str = ""  # Bearer token (optional, overrides daemon_token)
+    description: str = ""  # e.g. "XPU dev machine"
+
+
 class ClawTeamConfig(BaseModel):
     data_dir: str = ""
     user: str = ""
@@ -53,8 +61,13 @@ class ClawTeamConfig(BaseModel):
     gource_seconds_per_day: float = 0.5  # animation speed
     profiles: dict[str, AgentProfile] = Field(default_factory=dict)
     presets: dict[str, AgentPreset] = Field(default_factory=dict)
+    daemon_token: str = ""  # Bearer token for daemon auth
+    daemon_port: int = 9090  # daemon HTTP server port
+    sync_interval: float = 5.0  # file sync polling interval (seconds)
     spawn_prompt_delay: float = 2.0  # fallback wait (seconds) if TUI ready-detection times out
     spawn_ready_timeout: float = 30.0  # max seconds to poll for TUI readiness before fallback
+    nodes: dict[str, NodeConfig] = Field(default_factory=dict)
+    default_node: str = ""  # default --node alias name
 
 
 def config_path() -> Path:
@@ -100,6 +113,10 @@ def get_effective(key: str) -> tuple[str, str]:
         "gource_seconds_per_day": "CLAWTEAM_GOURCE_SECONDS_PER_DAY",
         "spawn_prompt_delay": "CLAWTEAM_SPAWN_PROMPT_DELAY",
         "spawn_ready_timeout": "CLAWTEAM_SPAWN_READY_TIMEOUT",
+        "daemon_token": "CLAWTEAM_DAEMON_TOKEN",
+        "daemon_port": "CLAWTEAM_DAEMON_PORT",
+        "sync_interval": "CLAWTEAM_SYNC_INTERVAL",
+        "default_node": "CLAWTEAM_DEFAULT_NODE",
     }
     defaults = ClawTeamConfig()
     cfg = load_config()
@@ -123,5 +140,5 @@ def scalar_config_keys() -> list[str]:
     return [
         key
         for key in ClawTeamConfig.model_fields.keys()
-        if key not in {"profiles", "presets"}
+        if key not in {"profiles", "presets", "nodes"}
     ]

@@ -56,6 +56,13 @@ Tasks support dependency chains and priorities.
 
 **Board** — Team dashboard with kanban tasks, inbox counts, and message history views, plus gource activity visualization.
 
+**Daemon** — Remote agent host. Runs on a target machine and accepts spawn/stop/sync requests over HTTP.
+Start with `python -c "from clawteam.daemon.server import serve; serve()"` (default port 9090).
+
+**Sync** — File-based bidirectional sync between local and remote data directories.
+Uses three-way merge with last-write-wins for task conflicts. Syncs tasks, inboxes, sessions,
+plans, costs, events, config, and peer info.
+
 ## Quick Start
 
 ### Set Up a Team with Tasks
@@ -110,17 +117,35 @@ clawteam spawn subprocess --profile gemini-vertex --team my-team --agent-name wo
 clawteam board attach my-team
 clawteam inbox send my-team worker1 "Start implementing the auth module"
 clawteam board live my-team --interval 3
+
+# Remote agent — spawn on a remote daemon (--node implies http backend)
+clawteam spawn --team my-team --agent-name worker-remote \
+  --node http://remote-host:9090 --task "Build API endpoints"
+
+# Remote using a named node alias (configured with `clawteam node set`)
+clawteam spawn --team my-team --agent-name worker-remote \
+  --node XPU --task "Build API endpoints"
+
+# Remote without git worktree
+clawteam spawn --team my-team --agent-name worker-remote \
+  --node XPU --no-workspace --task "Run linting"
+
+# Replace a running remote agent with a new task
+clawteam spawn --team my-team --agent-name worker-remote \
+  --node XPU --replace --task "New assignment"
 ```
 
 ### Spawn Defaults
 
 | Setting | Default | Override |
 |---------|---------|----------|
-| Backend | `tmux` | `clawteam spawn subprocess ...` |
+| Backend | `tmux` | `clawteam spawn subprocess ...` or `--node` for `http` |
 | Command | `claude` | `clawteam spawn tmux my-cmd ...` |
 | Workspace | `auto` (git worktree) | `--no-workspace` or config `workspace=never` |
 | Permissions | skip | `--no-skip-permissions` or config `skip_permissions=false` |
 | Runtime profile | none | `--profile <name>` |
+| Node (remote) | none (local) | `--node <alias>` or `--node http://host:9090` |
+| Replace | `false` | `--replace` (stop existing agent with same name first) |
 
 Use `--profile` whenever you need a non-default provider, model, endpoint, or auth mapping.
 
@@ -217,6 +242,7 @@ Configure non-default providers through `profile` + `preset` instead of hardcodi
 |-------|---------|-------------|
 | `preset` | Shared provider templates | `list`, `show`, `generate-profile`, `bootstrap` |
 | `profile` | Reusable client/provider configs | `list`, `show`, `set`, `test`, `wizard`, `doctor` |
+| `node` | Remote daemon node aliases | `list`, `show`, `set`, `remove` |
 | `team` | Team lifecycle | `spawn-team`, `discover`, `status`, `request-join`, `approve-join`, `cleanup`, `snapshot`, `restore` |
 | `inbox` | Messaging | `send`, `broadcast`, `receive`, `peek`, `watch` |
 | `task` | Task management | `create`, `get`, `update`, `list`, `wait` |
@@ -224,7 +250,8 @@ Configure non-default providers through `profile` + `preset` instead of hardcodi
 | `context` | Git/worktree context | `diff`, `files`, `conflicts`, `log`, `inject` |
 | `plan` | Plan approval | `submit`, `approve`, `reject` |
 | `lifecycle` | Agent lifecycle | `request-shutdown`, `approve-shutdown`, `idle` |
-| `spawn` | Process spawning | `spawn [backend] [command]` |
+| `spawn` | Process spawning (local or remote) | `spawn [backend] [command]` |
+| `daemon` | Remote agent host | `python -m clawteam.daemon.server` |
 | `identity` | Identity management | `show`, `set` |
 
 ## JSON Output
@@ -254,6 +281,14 @@ clawteam --json task list my-team --status pending
 - `profile` is the final runtime object; `preset` is a reusable template for generating profiles.
 - For Claude Code on a fresh machine/home, run `clawteam profile doctor claude` once before spawning.
 - `context inject` and `context conflicts` are the recommended way to hand off cross-worktree tasks safely.
+- `--node URL` implies `http` backend; the daemon on that URL runs the agent remotely.
+- `--node` also accepts a named alias configured via `clawteam node set`; use `clawteam node list` to see available aliases.
+- Remote agents need the daemon started on the target machine (`from clawteam.daemon.server import serve; serve()`, default port 9090).
+- Sync uses last-write-wins conflict resolution for tasks; config/registry uses leader-wins.
+- `--task` passes literal text into the agent prompt — it is NOT a task store lookup. Use full task IDs so agents can call `task get`.
+- `--blocked-by` requires full 8-char hex task IDs. Numeric indexes or arbitrary strings create unresolvable dependencies.
+- Remote agents cannot use `workspace *`, `context *`, `board attach`, or `board gource` (require local git/tmux).
+- `team cleanup --force` sends HTTP `/stop/{agent}` to terminate remote agents on the daemon.
 
 ## Additional Resources
 

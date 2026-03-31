@@ -55,6 +55,8 @@ class SubprocessBackend(SpawnBackend):
             spawn_env["CLAWTEAM_WORKSPACE_DIR"] = cwd
         if env:
             spawn_env.update(env)
+        if skip_permissions:
+            spawn_env["IS_SANDBOX"] = "1"
         spawn_env["PATH"] = build_spawn_path(spawn_env.get("PATH"))
         if os.path.isabs(clawteam_bin):
             spawn_env.setdefault("CLAWTEAM_BIN", clawteam_bin)

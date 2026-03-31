@@ -75,6 +75,8 @@ class TmuxBackend(SpawnBackend):
         env_vars["CLAWTEAM_CONTEXT_ENABLED"] = "1"
         if env:
             env_vars.update(env)
+        if skip_permissions:
+            env_vars["IS_SANDBOX"] = "1"
         env_vars["PATH"] = build_spawn_path(env_vars.get("PATH", os.environ.get("PATH")))
         if os.path.isabs(clawteam_bin):
             env_vars.setdefault("CLAWTEAM_BIN", clawteam_bin)
