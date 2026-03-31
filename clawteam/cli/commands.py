@@ -261,6 +261,9 @@ app.add_typer(preset_app, name="preset")
 profile_app = typer.Typer(help="Reusable agent runtime profiles")
 app.add_typer(profile_app, name="profile")
 
+node_app = typer.Typer(help="Remote daemon node aliases")
+app.add_typer(node_app, name="node")
+
 
 @preset_app.command("list")
 def preset_list():
@@ -1077,6 +1080,104 @@ def profile_doctor(
     _output(result, _human)
 
 
+# ============================================================================
+# Node Subcommands
+# ============================================================================
+
+
+@node_app.command("list")
+def node_list():
+    """List configured node aliases."""
+    from clawteam.spawn.nodes import list_nodes
+
+    nodes = list_nodes()
+
+    def _human(data):
+        if not data:
+            console.print("[dim]No nodes configured.[/dim]")
+            return
+        table = Table(title="Nodes")
+        table.add_column("Name", style="cyan")
+        table.add_column("URL")
+        table.add_column("Token")
+        table.add_column("Description")
+        for name, node in sorted(data.items()):
+            table.add_row(
+                name,
+                node.get("url", "") or "(unset)",
+                "***" if node.get("token") else "",
+                node.get("description", "") or "",
+            )
+        console.print(table)
+
+    _output(
+        {name: _dump(node) for name, node in nodes.items()},
+        _human,
+    )
+
+
+@node_app.command("show")
+def node_show(
+    name: str = typer.Argument(..., help="Node alias name"),
+):
+    """Show a node alias configuration."""
+    from clawteam.spawn.nodes import load_node
+
+    try:
+        node = load_node(name)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    data = _dump(node)
+
+    def _human(d):
+        console.print(f"[bold cyan]{name}[/bold cyan]")
+        console.print(f"  URL: {d.get('url') or '(unset)'}")
+        console.print(f"  Token: {'***' if d.get('token') else '(unset)'}")
+        console.print(f"  Description: {d.get('description') or ''}")
+
+    _output(data, _human)
+
+
+@node_app.command("set")
+def node_set(
+    name: str = typer.Argument(..., help="Node alias name"),
+    url: str = typer.Option(..., "--url", help="Daemon URL (e.g. http://10.0.0.5:9090)"),
+    token: str = typer.Option("", "--token", help="Bearer token (optional, overrides daemon_token)"),
+    description: str = typer.Option("", "--description", "-d", help="Human-readable description"),
+):
+    """Create or update a node alias."""
+    from clawteam.config import NodeConfig
+    from clawteam.spawn.nodes import save_node
+
+    node = NodeConfig(url=url, token=token, description=description)
+    save_node(name, node)
+    _output(
+        {"status": "saved", "node": name},
+        lambda d: console.print(f"[green]OK[/green] Saved node '{name}' -> {url}"),
+    )
+
+
+@node_app.command("remove")
+def node_remove(
+    name: str = typer.Argument(..., help="Node alias name"),
+):
+    """Remove a node alias."""
+    from clawteam.spawn.nodes import remove_node
+
+    try:
+        remove_node(name)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    _output(
+        {"status": "removed", "node": name},
+        lambda d: console.print(f"[green]OK[/green] Removed node '{name}'"),
+    )
+
+
 @config_app.command("health")
 def config_health():
     """Health check for the data directory (shared directory diagnostics)."""
@@ -1518,6 +1619,20 @@ def team_cleanup(
     if not force and not _json_output:
         if not typer.confirm(f"Delete team '{team}' and all its data?"):
             raise typer.Abort()
+
+    # Best-effort stop of all running agents (including remote) before cleanup
+    from clawteam.spawn.registry import get_registry, is_agent_alive, stop_agent
+
+    registry = get_registry(team)
+    for agent_name in list(registry.keys()):
+        alive = is_agent_alive(team, agent_name)
+        if alive is True:
+            stopped = stop_agent(team, agent_name)
+            if not _json_output:
+                if stopped:
+                    console.print(f"[dim]Stopped agent '{agent_name}'[/dim]")
+                else:
+                    console.print(f"[yellow]Warning: could not stop agent '{agent_name}'[/yellow]")
 
     if TeamManager.cleanup(team):
         _output({"status": "cleaned", "team": team}, lambda d: console.print(f"[green]OK[/green] Team '{team}' deleted"))
@@ -2808,7 +2923,7 @@ def lifecycle_check_zombies(
 
 @app.command("spawn")
 def spawn_agent(
-    backend: Optional[str] = typer.Argument(None, help="Backend: tmux (default) or subprocess"),
+    backend: Optional[str] = typer.Argument(None, help="Backend: tmux (default), subprocess, or http"),
     command: list[str] = typer.Argument(None, help="Command and arguments to run (default: claude)"),
     team: Optional[str] = typer.Option(None, "--team", "-t", help="Team name"),
     agent_name: Optional[str] = typer.Option(None, "--agent-name", "-n", help="Agent name"),
@@ -2821,6 +2936,7 @@ def spawn_agent(
     resume: bool = typer.Option(False, "--resume", "-r", help="Resume previous session if available"),
     replace: bool = typer.Option(False, "--replace", help="Replace a running agent with the same name"),
     skill: Optional[list[str]] = typer.Option(None, "--skill", help="Skill name(s) to inject into the agent's system prompt (repeatable, claude only)"),
+    node: Optional[str] = typer.Option(None, "--node", help="Remote daemon URL (e.g. http://host:9090) — spawns agent on remote machine via HTTP"),
 ):
     """Spawn a new agent process with identity + task as its initial prompt.
 
@@ -2829,13 +2945,25 @@ def spawn_agent(
     Backends:
       tmux        - Launch in tmux windows (visual monitoring)
       subprocess  - Launch as background processes
+      http        - Launch on a remote machine via daemon (use --node)
     """
     from clawteam.config import get_effective
     from clawteam.spawn import get_backend
     from clawteam.spawn.profiles import apply_profile, load_profile, resolve_profile_name
 
-    # Resolve defaults from config
-    if backend is None:
+    # --node implies http backend; resolve alias if needed
+    node_url = ""
+    node_token = ""
+    if node:
+        from clawteam.spawn.nodes import resolve_node
+
+        try:
+            node_url, node_token = resolve_node(node)
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1)
+        backend = "http"
+    elif backend is None:
         backend, _ = get_effective("default_backend")
         backend = backend or "tmux"
     try:
@@ -2883,7 +3011,7 @@ def spawn_agent(
         skip_permissions = str(sp_val).lower() not in ("false", "0", "no", "")
 
     try:
-        be = get_backend(backend)
+        be = get_backend(backend, node_url=node_url, token=node_token, team_name=_team)
     except ValueError as e:
         message = str(e) + _spawn_backend_hint(backend, team)
         _output({"error": message}, lambda d: console.print(f"[red]{d['error']}[/red]"))
@@ -2901,7 +3029,10 @@ def spawn_agent(
     elif workspace is False:
         ws_mode = "never"
 
-    if workspace:
+    # For HTTP backend, the daemon handles worktree creation remotely
+    if backend == "http":
+        be.workspace = workspace if workspace is not None else True
+    elif workspace:
         from clawteam.workspace import get_workspace_manager
         ws_mgr = get_workspace_manager(repo)
         if ws_mgr is None:

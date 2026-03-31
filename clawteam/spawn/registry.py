@@ -7,6 +7,8 @@ import os
 import signal
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from clawteam.fileutil import atomic_write_text, file_locked
@@ -29,6 +31,7 @@ def register_agent(
     tmux_target: str = "",
     pid: int = 0,
     command: list[str] | None = None,
+    node_url: str = "",
 ) -> None:
     """Record spawn info for an agent (atomic + locked write)."""
     path = _registry_path(team_name)
@@ -40,6 +43,7 @@ def register_agent(
             "pid": pid,
             "command": command or [],
             "spawned_at": time.time(),
+            "node_url": node_url,
         }
         _save(path, registry)
 
@@ -71,6 +75,8 @@ def is_agent_alive(team_name: str, agent_name: str) -> bool | None:
         return alive
     elif backend == "subprocess":
         return _pid_alive(info.get("pid", 0))
+    elif backend == "http":
+        return _http_agent_alive(info, team_name, agent_name)
     return None
 
 
@@ -144,6 +150,8 @@ def stop_agent(team_name: str, agent_name: str, timeout_seconds: float = 3.0) ->
                 pass
             except PermissionError:
                 return False
+    elif backend == "http":
+        return _http_stop_agent(info, team_name, agent_name, timeout_seconds)
 
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
@@ -153,6 +161,44 @@ def stop_agent(team_name: str, agent_name: str, timeout_seconds: float = 3.0) ->
         time.sleep(0.1)
 
     return is_agent_alive(team_name, agent_name) in (False, None)
+
+
+def _http_agent_alive(info: dict, team_name: str, agent_name: str) -> bool | None:
+    """Check agent liveness via the remote daemon HTTP API."""
+    node_url = info.get("node_url", "")
+    if not node_url:
+        return None
+    try:
+        url = f"{node_url.rstrip('/')}/status/{agent_name}?team={team_name}"
+        req = urllib.request.Request(url, method="GET")
+        token = info.get("token", "")
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            return data.get("alive")
+    except Exception:
+        return None
+
+
+def _http_stop_agent(
+    info: dict, team_name: str, agent_name: str, timeout_seconds: float
+) -> bool | None:
+    """Stop an agent via the remote daemon HTTP API."""
+    node_url = info.get("node_url", "")
+    if not node_url:
+        return None
+    try:
+        url = f"{node_url.rstrip('/')}/stop/{agent_name}?team={team_name}"
+        req = urllib.request.Request(url, method="POST", data=b"")
+        token = info.get("token", "")
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        with urllib.request.urlopen(req, timeout=timeout_seconds + 5) as resp:
+            data = json.loads(resp.read())
+            return data.get("stopped")
+    except Exception:
+        return None
 
 
 def _tmux_pane_alive(target: str) -> bool:

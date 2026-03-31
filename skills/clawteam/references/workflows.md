@@ -205,3 +205,107 @@ clawteam --json board overview | jq '.[] | "\(.name): \(.pendingMessages) pendin
 # Get team member names
 clawteam --json team status dev-team | jq -r '.members[].name'
 ```
+
+## Workflow 7: Remote Agent Coordination
+
+Spawn agents on remote machines via daemon for distributed team execution.
+
+### Prerequisites
+
+```bash
+# On remote machine: start daemon
+python -c "from clawteam.daemon.server import serve; serve(port=9090, repo_root='/path/to/project')"
+
+# From local machine: verify connectivity
+curl -s http://remote-host:9090/healthz
+# => {"status": "ok"}
+```
+
+### Configure Node Aliases (Optional)
+
+```bash
+# Save named aliases for frequently used machines
+clawteam node set XPU --url http://10.129.16.114:8181 -d "XPU dev machine"
+clawteam node set GPU --url http://10.0.0.5:9090 --token mysecret -d "GPU training box"
+
+# Verify
+clawteam node list
+clawteam node show XPU
+```
+
+### Setup and Spawn
+
+```bash
+# Create team and register members
+clawteam team spawn-team distributed-team -d "Cross-machine development"
+clawteam team add-member distributed-team remote-worker --agent-type general-purpose
+
+# Create tasks with dependencies (use full 8-char hex IDs for --blocked-by)
+clawteam task create distributed-team "Design API schema" -o leader
+# => Task ID: aaa11111
+
+clawteam task create distributed-team "Implement backend" --blocked-by aaa11111
+# => Task ID: bbb22222 (status: blocked)
+
+# Spawn remote agent (--node implies http backend)
+# Using a full URL:
+clawteam spawn --team distributed-team --agent-name remote-worker \
+  --node http://remote-host:9090 --task aaa11111
+
+# Or using a named alias:
+clawteam spawn --team distributed-team --agent-name remote-worker \
+  --node XPU --task aaa11111
+```
+
+### Ensuring Task Files Reach Remote
+
+The daemon needs task files on the remote before the agent can operate on them.
+Push files manually via the sync API if needed:
+
+```bash
+# Check what the remote has
+curl -s http://remote-host:9090/sync/manifest?team=distributed-team
+
+# If task files are missing, push them
+python3 -c "
+import json, base64, pathlib, urllib.request
+data_dir = pathlib.Path.home() / '.clawteam'
+team = 'distributed-team'
+task_dir = data_dir / 'tasks' / team
+files = {}
+for f in task_dir.glob('task-*.json'):
+    rel = f.relative_to(data_dir).as_posix()
+    files[rel] = base64.b64encode(f.read_bytes()).decode()
+payload = json.dumps({'team': team, 'files': files, 'deletions': []}).encode()
+req = urllib.request.Request(
+    'http://remote-host:9090/sync/push',
+    data=payload, headers={'Content-Type': 'application/json'}, method='POST')
+print(json.loads(urllib.request.urlopen(req, timeout=30).read()))
+"
+```
+
+### Monitoring Remote Agents
+
+```bash
+# Check remote agent liveness via daemon API
+curl -s "http://remote-host:9090/agents?team=distributed-team"
+
+# Board and task commands read local data
+clawteam board show distributed-team
+clawteam task list distributed-team
+
+# Replace a remote agent with a new task
+clawteam spawn --team distributed-team --agent-name remote-worker \
+  --node http://remote-host:9090 --replace --task bbb22222
+
+# Clean up: stops remote agents via HTTP /stop, then deletes team
+clawteam team cleanup distributed-team --force
+```
+
+### Remote Agent Limitations
+
+- Remote agents cannot use `workspace *`, `context *`, `board attach`, or `board gource` (require local git/tmux).
+- `--task` is literal prompt text, not a task store lookup. Pass task IDs so agents can `task get` them.
+- `--blocked-by` requires full 8-char hex task IDs; numeric indexes create unresolvable dependencies.
+- The sync loop started by each `spawn` CLI call is ephemeral (daemon thread dies when CLI exits). For reliable sync, push files via `/sync/push` API before spawning remote agents.
+- Auto-unblock (`_resolve_dependents_unlocked`) only triggers through `task update`, not through raw file sync. If a remote agent completes a task, the resolve happens on the remote side; sync then propagates the result back.

@@ -323,21 +323,158 @@ clawteam lifecycle idle <team> [--last-task ID] [--task-status STATUS]
 Spawn a new agent process with team environment variables.
 
 ```bash
-clawteam spawn <backend> <command...> [options]
+clawteam spawn [backend] [command...] [options]
 ```
 
 | Option | Description | Default |
 |--------|-------------|---------|
+| `backend` | Backend: `tmux` (default), `subprocess`, or `http` | `tmux` |
+| `command` | Command and arguments to run | `claude` |
 | `--team, -t` | Team name | `"default"` |
 | `--agent-name, -n` | Agent name | auto-generated |
 | `--agent-type` | Agent type | `"general-purpose"` |
+| `--task` | Task text for agent's initial prompt (literal text, not a task ID lookup) | `None` |
+| `--profile` | Apply a named runtime profile | `None` |
+| `--workspace / --no-workspace, -w` | Create isolated git worktree | `auto` |
+| `--repo` | Git repo path | cwd |
+| `--skip-permissions / --no-skip-permissions` | Skip tool approval for claude | from config (true) |
+| `--resume, -r` | Resume previous session if available | `false` |
+| `--replace` | Stop existing agent with same name before spawning | `false` |
+| `--skill` | Skill name(s) to inject into system prompt (repeatable, claude only) | `None` |
+| `--node` | Remote daemon URL or named node alias — spawns agent on remote machine via HTTP | `None` |
 
-Backends: `subprocess`, `tmux`
+Backends: `tmux` (visual tmux windows), `subprocess` (background processes), `http` (remote daemon).
+
+`--node` implies `http` backend automatically. Accepts a full URL or a named node alias configured via `clawteam node set`.
 
 Example:
 ```bash
+# Local spawn (default)
+clawteam spawn --team dev-team --agent-name bob --task "Implement auth"
+
+# Remote spawn via daemon
+clawteam spawn --team dev-team --agent-name bob \
+  --node http://10.0.0.5:9090 --task "Implement auth"
+
+# Remote, no worktree, replace existing
+clawteam spawn --team dev-team --agent-name bob \
+  --node http://10.0.0.5:9090 --no-workspace --replace --task "New task"
+
+# Local with explicit backend and command
 clawteam spawn subprocess claude --team dev-team --agent-name bob --agent-type researcher
 ```
+
+---
+
+## Node Commands (`clawteam node`)
+
+Manage named aliases for remote daemon nodes. Aliases let you use `--node XPU` instead of `--node http://10.129.16.114:8181`.
+
+### `node list`
+
+List all configured node aliases.
+
+```bash
+clawteam node list
+clawteam --json node list
+```
+
+### `node show`
+
+Show a single node alias configuration.
+
+```bash
+clawteam node show <name>
+```
+
+### `node set`
+
+Create or update a node alias.
+
+```bash
+clawteam node set <name> --url <url> [--token TOKEN] [--description TEXT]
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--url` | Daemon URL (e.g. `http://10.0.0.5:9090`) | required |
+| `--token` | Bearer token (overrides `daemon_token`) | `""` |
+| `--description, -d` | Human-readable description | `""` |
+
+Example:
+```bash
+clawteam node set XPU --url http://10.129.16.114:8181 -d "XPU dev machine"
+clawteam node set GPU --url http://10.0.0.5:9090 --token mysecret -d "GPU training box"
+```
+
+### `node remove`
+
+Remove a node alias.
+
+```bash
+clawteam node remove <name>
+```
+
+---
+
+## Daemon
+
+The daemon runs on a remote machine to accept agent spawn/stop requests and serve file sync.
+
+### Starting the Daemon
+
+```bash
+python -c "from clawteam.daemon.server import serve; serve()"                            # defaults: 0.0.0.0:9090, no auth
+python -c "from clawteam.daemon.server import serve; serve(port=8181, token='secret', repo_root='/path/to/repo')"
+```
+
+Or equivalently in a Python script:
+```python
+from clawteam.daemon.server import serve
+serve(port=9090, token="mysecret", repo_root="/path/to/repo")
+```
+
+### Configuration
+
+| Config field | Env var | Default | Description |
+|-------------|---------|---------|-------------|
+| `daemon_token` | `CLAWTEAM_DAEMON_TOKEN` | `""` | Bearer token (empty = no auth) |
+| `daemon_port` | `CLAWTEAM_DAEMON_PORT` | `9090` | HTTP listen port |
+| `sync_interval` | — | `5.0` | File sync polling interval (seconds) |
+
+### Daemon API Endpoints
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/healthz` | No | Health check |
+| `GET` | `/agents?team=<team>` | Yes | List agents with liveness status |
+| `GET` | `/status/<agent>?team=<team>` | Yes | Check specific agent liveness |
+| `POST` | `/spawn` | Yes | Spawn agent (JSON body) |
+| `POST` | `/stop/<agent>?team=<team>` | Yes | Stop a running agent |
+| `GET` | `/sync/manifest?team=<team>` | Yes | Get file manifest for sync |
+| `POST` | `/sync/pull` | Yes | Pull file contents (batch, base64) |
+| `POST` | `/sync/push` | Yes | Push file contents (batch, base64) |
+
+### File Sync
+
+Sync keeps local and remote `data_dir` in sync bidirectionally. Synced file patterns:
+
+| Directory | Files |
+|-----------|-------|
+| `tasks/{team}/` | `task-*.json` |
+| `teams/{team}/inboxes/*/` | `msg-*.json` |
+| `teams/{team}/` | `config.json`, `spawn_registry.json` |
+| `teams/{team}/events/` | `evt-*.json` |
+| `sessions/{team}/` | `*.json` |
+| `costs/{team}/` | `cost-*.json` |
+| `plans/{team}/` | `*.md` |
+| `teams/{team}/peers/` | `*.json` |
+
+Conflict resolution strategy:
+- **Tasks** (`task-*.json`): last-write-wins (compares `updatedAt` timestamp)
+- **Config/registry**: leader wins (always push)
+- **Sessions/plans**: remote wins (pull, agent-owned files)
+- **Other** (messages, events, costs): remote wins (pull)
 
 ---
 

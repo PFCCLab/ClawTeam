@@ -36,7 +36,7 @@ def test_spawn_cli_exits_nonzero_and_rolls_back_failed_member(monkeypatch, tmp_p
         leader_name="leader",
         leader_id="leader001",
     )
-    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: ErrorBackend())
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _, **kw: ErrorBackend())
 
     runner = CliRunner()
     result = runner.invoke(
@@ -54,7 +54,7 @@ def test_launch_cli_passes_skip_permissions_from_config(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path))
     monkeypatch.chdir(tmp_path)
     backend = RecordingBackend()
-    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _, **kw: backend)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -84,7 +84,7 @@ def test_spawn_cli_rejects_removed_acpx_backend(monkeypatch, tmp_path):
     )
 
     assert result.exit_code == 1
-    assert "Unknown spawn backend: acpx. Available: subprocess, tmux" in result.output
+    assert "Unknown spawn backend: acpx. Available: http, subprocess, tmux" in result.output
 
 
 def test_spawn_cli_invalid_backend_hint_mentions_team_flag(monkeypatch, tmp_path):
@@ -98,9 +98,11 @@ def test_spawn_cli_invalid_backend_hint_mentions_team_flag(monkeypatch, tmp_path
     )
 
     assert result.exit_code == 1
-    assert "the first" in result.output
-    assert "positional argument to `clawteam spawn` is the backend" in result.output
-    assert "--team <name>" in result.output
+    # Normalize whitespace — rich may line-wrap the hint message
+    normalized = " ".join(result.output.split())
+    assert "the first" in normalized
+    assert "positional argument to `clawteam spawn` is the backend" in normalized
+    assert "--team <name>" in normalized
 
 
 def test_launch_cli_rejects_removed_acpx_backend(monkeypatch, tmp_path):
@@ -115,7 +117,7 @@ def test_launch_cli_rejects_removed_acpx_backend(monkeypatch, tmp_path):
     )
 
     assert result.exit_code == 1
-    assert "Unknown spawn backend: acpx. Available: subprocess, tmux" in result.output
+    assert "Unknown spawn backend: acpx. Available: http, subprocess, tmux" in result.output
 
 
 def test_spawn_cli_applies_profile_command_and_env(monkeypatch, tmp_path):
@@ -143,7 +145,7 @@ def test_spawn_cli_applies_profile_command_and_env(monkeypatch, tmp_path):
         leader_id="leader001",
     )
     backend = RecordingBackend()
-    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _, **kw: backend)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -183,7 +185,7 @@ def test_spawn_cli_uses_configured_default_profile_when_no_profile_or_command(mo
         leader_id="leader001",
     )
     backend = RecordingBackend()
-    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _, **kw: backend)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -221,7 +223,7 @@ def test_spawn_cli_uses_single_profile_implicitly(monkeypatch, tmp_path):
         leader_id="leader001",
     )
     backend = RecordingBackend()
-    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _, **kw: backend)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -245,7 +247,7 @@ def test_spawn_cli_loads_skills_into_system_prompt(monkeypatch, tmp_path):
         leader_id="leader001",
     )
     backend = RecordingBackend()
-    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _, **kw: backend)
 
     skills_root = tmp_path / ".claude" / "skills"
     skill_dir = skills_root / "reviewer"
@@ -324,7 +326,7 @@ def test_launch_cli_applies_profile_to_template_agents(monkeypatch, tmp_path):
         )
     )
     backend = RecordingBackend()
-    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _, **kw: backend)
     monkeypatch.chdir(tmp_path)
 
     runner = CliRunner()
@@ -343,7 +345,7 @@ def test_launch_cli_applies_profile_to_template_agents(monkeypatch, tmp_path):
 def test_spawn_cli_auto_creates_team_for_orchestrator(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path))
     backend = RecordingBackend()
-    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _, **kw: backend)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -375,7 +377,7 @@ def test_spawn_cli_auto_creates_team_for_orchestrator(monkeypatch, tmp_path):
 def test_spawn_cli_auto_creates_team_for_general_purpose_agent(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path))
     backend = RecordingBackend()
-    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _, **kw: backend)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -404,7 +406,7 @@ def test_spawn_cli_auto_creates_team_for_general_purpose_agent(monkeypatch, tmp_
 
 def test_spawn_cli_rolls_back_auto_created_team_on_spawn_error(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAWTEAM_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: ErrorBackend())
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _, **kw: ErrorBackend())
 
     runner = CliRunner()
     result = runner.invoke(
@@ -436,7 +438,7 @@ def test_spawn_cli_rejects_duplicate_running_agent_without_replace(monkeypatch, 
         leader_id="leader001",
     )
     backend = RecordingBackend()
-    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _, **kw: backend)
     monkeypatch.setattr("clawteam.spawn.registry.is_agent_alive", lambda team, agent: True)
 
     runner = CliRunner()
@@ -460,7 +462,7 @@ def test_spawn_cli_replace_stops_running_agent_before_respawn(monkeypatch, tmp_p
     )
     backend = RecordingBackend()
     stop_calls: list[tuple[str, str]] = []
-    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _, **kw: backend)
     monkeypatch.setattr("clawteam.spawn.registry.is_agent_alive", lambda team, agent: True)
 
     def _stop(team: str, agent: str, timeout_seconds: float = 3.0) -> bool:
@@ -489,7 +491,7 @@ def test_spawn_cli_passes_repo_as_cwd_without_worktree_and_uses_repo_prompt(monk
         leader_id="leader001",
     )
     backend = RecordingBackend()
-    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _: backend)
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda _, **kw: backend)
 
     repo_path = tmp_path / "frontend"
     repo_path.mkdir()
